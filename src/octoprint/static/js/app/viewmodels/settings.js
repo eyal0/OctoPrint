@@ -138,6 +138,8 @@ $(function() {
         self.feature_ignoreIdenticalResends = ko.observable(undefined);
         self.feature_modelSizeDetection = ko.observable(undefined);
         self.feature_firmwareDetection = ko.observable(undefined);
+        self.feature_printCancelConfirmation = ko.observable(undefined);
+        self.feature_blockWhileDwelling = ko.observable(undefined);
 
         self.serial_port = ko.observable();
         self.serial_baudrate = ko.observable();
@@ -812,7 +814,7 @@ $(function() {
         };
 
         self._resetScrollPosition = function() {
-            $('.scrollable', self.settingsDialog).scrollTop(0);
+            $('#settings_dialog_content', self.settingsDialog).scrollTop(0);
         };
 
         self.selectTab = function(tab) {

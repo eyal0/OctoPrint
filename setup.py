@@ -46,8 +46,12 @@ INSTALL_REQUIRES = [
 	"feedparser>=5.2.1,<5.3",
 	"chainmap>=1.0.2,<1.1",
 	"future>=0.15,<0.16",
-	"scandir>=1.3,<1.4"
+	"scandir>=1.3,<1.4",
+	"websocket-client>=0.40,<0.41"
 ]
+
+if sys.platform == "darwin":
+	INSTALL_REQUIRES.append("appdirs>=1.4.0")
 
 # Additional requirements for optional install options
 EXTRA_REQUIRES = dict(
