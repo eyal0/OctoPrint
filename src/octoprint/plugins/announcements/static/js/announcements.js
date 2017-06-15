@@ -40,7 +40,7 @@ $(function() {
         };
 
         self.toggleButtonCss = function(data) {
-            var icon = data.enabled ? "icon-circle" : "icon-circle-blank";
+            var icon = data.enabled ? "fa fa-circle" : "fa fa-circle-blank";
             var disabled = (self.enableToggle(data)) ? "" : " disabled";
 
             return icon + disabled;
@@ -258,22 +258,22 @@ $(function() {
                         buttons: [{
                             text: gettext("Later"),
                             click: function(notice) {
-                                self.hiddenChannels.push(key);
                                 notice.remove();
+                                self.hiddenChannels.push(key);
                             }
                         }, {
                             text: gettext("Mark read"),
                             click: function(notice) {
-                                self.markRead(key, value.last);
                                 notice.remove();
+                                self.markRead(key, value.last);
                             }
                         }, {
                             text: gettext("Read..."),
                             addClass: "btn-primary",
                             click: function(notice) {
+                                notice.remove();
                                 self.showAnnouncementDialog(key);
                                 self.markRead(key, value.last);
-                                notice.remove();
                             }
                         }]
                     },
