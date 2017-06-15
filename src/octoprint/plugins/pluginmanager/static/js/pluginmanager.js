@@ -526,13 +526,11 @@ $(function() {
             if (reinstall) {
                 OctoPrint.plugins.pluginmanager.reinstall(reinstall, url, followDependencyLinks)
                     .done(onSuccess)
-                    .fail(onError)
-                    .always(onAlways);
+                    .fail(onError);
             } else {
                 OctoPrint.plugins.pluginmanager.install(url, followDependencyLinks)
                     .done(onSuccess)
-                    .fail(onError)
-                    .always(onAlways);
+                    .fail(onError);
             }
         };
 
@@ -788,9 +786,7 @@ $(function() {
         };
 
         self._scrollWorkingOutputToEnd = function() {
-            ko.bindingHandlers.fastForEach.FastForEach.animateFrame.call(window, function() {
-                self.workingOutput.scrollTop(self.workingOutput[0].scrollHeight - self.workingOutput.height());
-            });
+            self.workingOutput.scrollTop(self.workingOutput[0].scrollHeight - self.workingOutput.height());
         };
 
         self._getToggleCommand = function(data) {

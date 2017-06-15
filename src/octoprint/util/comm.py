@@ -228,11 +228,11 @@ class PositionRecord(object):
 
 	def as_dict(self):
 		return dict(x=self.x,
-					y=self.y,
-					z=self.z,
-					e=self.e,
-					t=self.t,
-					f=self.f)
+		            y=self.y,
+		            z=self.z,
+		            e=self.e,
+		            t=self.t,
+		            f=self.f)
 
 class MachineCom(object):
 	STATE_NONE = 0
@@ -1181,6 +1181,7 @@ class MachineCom(object):
 						# there's no way to query it from the firmware and
 						# no way to track it ourselves when not streaming
 						# the file - this all sucks sooo much
+						self.last_position.valid = True
 						self.last_position.x = float(match.group("x"))
 						self.last_position.y = float(match.group("y"))
 						self.last_position.z = float(match.group("z"))
@@ -2163,7 +2164,7 @@ class MachineCom(object):
 		self._log("Closing down send loop")
 
 	def _process_command_phase(self, phase, command, command_type=None, gcode=None):
-		if self.isStreaming() or phase not in ("queuing", "queued", "sending", "sent"):
+		if (self.isStreaming() and self.isPrinting()) or phase not in ("queuing", "queued", "sending", "sent"):
 			return command, command_type, gcode
 
 		if gcode is None:
@@ -2432,17 +2433,17 @@ class MachineCom(object):
 		self._heating = True
 
 	def _gcode_M110_sending(self, cmd, cmd_type=None):
-		newLineNumber = None
+		newLineNumber = 0
 		match = regexes_parameters["intN"].search(cmd)
 		if match:
 			try:
 				newLineNumber = int(match.group("value"))
 			except:
 				pass
-		else:
-			newLineNumber = 0
 
 		with self._line_mutex:
+			self._logger.info("M110 detected, setting current line number to {}".format(newLineNumber))
+
 			# send M110 command with new line number
 			self._currentLine = newLineNumber
 

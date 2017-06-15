@@ -475,11 +475,14 @@ class Server(object):
 
 		# auto connect
 		if self._settings.getBoolean(["serial", "autoconnect"]):
-			(port, baudrate) = self._settings.get(["serial", "port"]), self._settings.getInt(["serial", "baudrate"])
-			printer_profile = printerProfileManager.get_default()
-			connectionOptions = printer.__class__.get_connection_options()
-			if port in connectionOptions["ports"]:
-				printer.connect(port=port, baudrate=baudrate, profile=printer_profile["id"] if "id" in printer_profile else "_default")
+			try:
+				(port, baudrate) = self._settings.get(["serial", "port"]), self._settings.getInt(["serial", "baudrate"])
+				printer_profile = printerProfileManager.get_default()
+				connectionOptions = printer.__class__.get_connection_options()
+				if port in connectionOptions["ports"]:
+						printer.connect(port=port, baudrate=baudrate, profile=printer_profile["id"] if "id" in printer_profile else "_default")
+			except:
+				self._logger.exception("Something went wrong while attempting to automatically connect to the printer")
 
 		# start up watchdogs
 		if self._settings.getBoolean(["feature", "pollWatched"]):
@@ -819,6 +822,7 @@ class Server(object):
 					kwargs.update(additional_request_data)
 
 					try:
+						start = time.time()
 						if plugin:
 							logger.info("Preemptively caching {} (ui {}) for {!r}".format(route, plugin, kwargs))
 						else:
@@ -832,7 +836,7 @@ class Server(object):
 						builder = EnvironBuilder(**kwargs)
 						app(builder.get_environ(), lambda *a, **kw: None)
 
-						logger.info("... done.".format(route, plugin, kwargs))
+						logger.info("... done in {:.2f}s".format(time.time() - start))
 					except:
 						logger.exception("Error while trying to preemptively cache {} for {!r}".format(route, kwargs))
 
