@@ -71,6 +71,7 @@ class Printer(PrinterInterface, comm.MachineComPrintCallback):
 		self._sdStreaming = False
 		self._sdFilelistAvailable = threading.Event()
 		self._streamingFinishedCallback = None
+		self._streamingFailedCallback = None
 
 		self._selectedFileMutex = threading.RLock()
 		self._selectedFile = None
@@ -579,12 +580,13 @@ class Printer(PrinterInterface, comm.MachineComPrintCallback):
 			return []
 		return map(lambda x: (x[0][1:], x[1]), self._comm.getSdFiles())
 
-	def add_sd_file(self, filename, absolutePath, streamingFinishedCallback):
+	def add_sd_file(self, filename, absolutePath, on_success=None, on_failure=None):
 		if not self._comm or self._comm.isBusy() or not self._comm.isSdReady():
 			self._logger.error("No connection to printer or printer is busy")
 			return
 
-		self._streamingFinishedCallback = streamingFinishedCallback
+		self._streamingFinishedCallback = on_success
+		self._streamingFailedCallback = on_failure
 
 		self.refresh_sd_files(blocking=True)
 		existingSdFiles = map(lambda x: x[0], self._comm.getSdFiles())
@@ -763,7 +765,7 @@ class Printer(PrinterInterface, comm.MachineComPrintCallback):
 		    (2-tuple) estimated print time left or None if not proper estimate could be made at all, origin of estimation
 		"""
 
-		if progress is None or printTime is None or cleanedPrintTime is None:
+		if progress is None or progress == 0 or printTime is None or cleanedPrintTime is None:
 			return None, None
 
 		dumbTotalPrintTime = printTime / progress
@@ -1000,7 +1002,17 @@ class Printer(PrinterInterface, comm.MachineComPrintCallback):
 			with self._selectedFileMutex:
 				if self._selectedFile is not None:
 					if state == comm.MachineCom.STATE_CLOSED or state == comm.MachineCom.STATE_ERROR or state == comm.MachineCom.STATE_CLOSED_WITH_ERROR:
-						self._fileManager.log_print(FileDestinations.SDCARD if self._selectedFile["sd"] else FileDestinations.LOCAL, self._selectedFile["filename"], time.time(), self._comm.getPrintTime(), False, self._printerProfileManager.get_current_or_default()["id"])
+						def log_print():
+							self._fileManager.log_print(FileDestinations.SDCARD if self._selectedFile["sd"] else FileDestinations.LOCAL,
+							                            self._selectedFile["filename"],
+							                            time.time(),
+							                            self._comm.getPrintTime(),
+							                            False,
+							                            self._printerProfileManager.get_current_or_default()["id"])
+
+						thread = threading.Thread(target=log_print)
+						thread.daemon = True
+						thread.start()
 			self._analysisQueue.resume() # printing done, put those cpu cycles to good use
 		elif state == comm.MachineCom.STATE_PRINTING:
 			self._analysisQueue.pause() # do not analyse files while printing
@@ -1091,12 +1103,18 @@ class Printer(PrinterInterface, comm.MachineComPrintCallback):
 			            context=dict(event=payload),
 			            must_be_set=False)
 
-			self._fileManager.log_print(payload["origin"],
-			                            payload["path"],
-			                            time.time(),
-			                            payload["time"],
-			                            True,
-			                            self._printerProfileManager.get_current_or_default()["id"])
+			def log_print():
+				self._fileManager.log_print(payload["origin"],
+				                            payload["path"],
+				                            time.time(),
+				                            payload["time"],
+				                            True,
+				                            self._printerProfileManager.get_current_or_default()["id"])
+
+			thread = threading.Thread(target=log_print)
+			thread.daemon = True
+			thread.start()
+
 		else:
 			self._updateProgressData()
 			self._stateMonitor.set_state({"text": self.get_state_string(), "flags": self._getStateFlags()})
@@ -1119,13 +1137,18 @@ class Printer(PrinterInterface, comm.MachineComPrintCallback):
 			            context=dict(event=payload),
 			            must_be_set=False)
 
-			self._fileManager.log_print(payload["origin"],
-			                            payload["path"],
-			                            time.time(),
-			                            payload["time"],
-			                            False,
-			                            self._printerProfileManager.get_current_or_default()["id"])
-			eventManager().fire(Events.PRINT_FAILED, payload)
+			def finalize():
+				self._fileManager.log_print(payload["origin"],
+				                            payload["path"],
+				                            time.time(),
+				                            payload["time"],
+				                            False,
+				                            self._printerProfileManager.get_current_or_default()["id"])
+				eventManager().fire(Events.PRINT_FAILED, payload)
+
+			thread = threading.Thread(target=finalize)
+			thread.daemon = True
+			thread.start()
 
 	def on_comm_print_job_paused(self):
 		payload = self._payload_for_print_job_event(position=self._comm.pause_position.as_dict() if self._comm and self._comm.pause_position else None)
@@ -1150,18 +1173,25 @@ class Printer(PrinterInterface, comm.MachineComPrintCallback):
 		self._updateProgressData(completion=0.0, filepos=0, printTime=0)
 		self._stateMonitor.set_state({"text": self.get_state_string(), "flags": self._getStateFlags()})
 
-	def on_comm_file_transfer_done(self, filename):
+	def on_comm_file_transfer_done(self, filename, failed=False):
 		self._sdStreaming = False
 
-		if self._streamingFinishedCallback is not None:
-			# in case of SD files, both filename and absolutePath are the same, so we set the (remote) filename for
-			# both parameters
-			self._streamingFinishedCallback(filename, filename, FileDestinations.SDCARD)
+		# in case of SD files, both filename and absolutePath are the same, so we set the (remote) filename for
+		# both parameters
+		if failed:
+			if self._streamingFailedCallback is not None:
+				self._streamingFailedCallback(filename, filename, FileDestinations.SDCARD)
+		else:
+			if self._streamingFinishedCallback is not None:
+				self._streamingFinishedCallback(filename, filename, FileDestinations.SDCARD)
 
 		self._setCurrentZ(None)
 		self._setJobData(None, None, None)
 		self._updateProgressData()
 		self._stateMonitor.set_state({"text": self.get_state_string(), "flags": self._getStateFlags()})
+
+	def on_comm_file_transfer_failed(self, filename):
+		self.on_comm_file_transfer_done(filename, failed=True)
 
 	def on_comm_force_disconnect(self):
 		self.disconnect()
@@ -1174,8 +1204,7 @@ class Printer(PrinterInterface, comm.MachineComPrintCallback):
 		except:
 			self._logger.exception("Error while trying to persist print recovery data")
 
-	def _payload_for_print_job_event(self, location=None, print_job_file=None, position=None):
-		print_job_size = None
+	def _payload_for_print_job_event(self, location=None, print_job_file=None, print_job_size=None, position=None):
 		if print_job_file is None:
 			with self._selectedFileMutex:
 				selected_file = self._selectedFile
@@ -1186,7 +1215,7 @@ class Printer(PrinterInterface, comm.MachineComPrintCallback):
 				print_job_size = selected_file.get("filesize", None)
 				location = FileDestinations.SDCARD if selected_file.get("sd", False) else FileDestinations.LOCAL
 
-		if not print_job_file or not print_job_size or not location:
+		if not print_job_file or not location:
 			return dict()
 
 		if location == FileDestinations.SDCARD:
@@ -1228,14 +1257,11 @@ class StateMonitor(object):
 
 		self._state = None
 		self._job_data = None
-		self._gcode_data = None
-		self._sd_upload_data = None
 		self._current_z = None
+		self._offsets = {}
 		self._progress = None
 
 		self._progress_dirty = False
-
-		self._offsets = {}
 
 		self._change_event = threading.Event()
 		self._state_lock = threading.Lock()

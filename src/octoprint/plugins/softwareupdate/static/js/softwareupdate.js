@@ -315,11 +315,11 @@ $(function() {
             if (data.status == "updateAvailable" || data.status == "updatePossible") {
                 var text = "<div class='softwareupdate_notification'>" + gettext("There are updates available for the following components:");
 
-                text += "<ul class='icons-ul'>";
+                text += "<ul class='fa-ul'>";
                 _.each(self.versions.items(), function(update_info) {
                     if (update_info.updateAvailable) {
                         text += "<li>"
-                            + "<i class='fa fa-li " + (update_info.updatePossible ? "fa-check-circle" : "fa-remove")+ "'></i>"
+                            + "<i class='fa fa-li " + (update_info.updatePossible ? "fa-check" : "fa-remove")+ "'></i>"
                             + "<span class='name' title='" + update_info.fullNameRemote + "'>" + update_info.fullNameRemote + "</span>"
                             + (update_info.releaseNotes ? "<a href=\"" +  update_info.releaseNotes + "\" target=\"_blank\">" + gettext("Release Notes") + "</a>" : "")
                             + "</li>";
@@ -327,7 +327,7 @@ $(function() {
                 });
                 text += "</ul>";
 
-                text += "<p><small>" + gettext("Those components marked with <i class=\"fa fa-check-circle\"></i> can be updated directly.") + "</small></p>";
+                text += "<p><small>" + gettext("Those components marked with <i class=\"fa fa-check\"></i> can be updated directly.") + "</small></p>";
 
                 if (!self.loginState.isAdmin()) {
                     text += "<p><small>" + gettext("To have updates applied, get in touch with an administrator of this OctoPrint instance.") + "</small></p>";
@@ -415,6 +415,42 @@ $(function() {
                 .always(function() {
                     self.checking(false);
                 });
+        };
+
+        self.iconTitleForEntry = function(data) {
+            if (data.updatePossible) {
+                return "";
+            } else if (!data.online && data.information && data.information.needs_online) {
+                return gettext("No internet connection");
+            } else if (data.error) {
+                return self.errorTextForEntry(data);
+            } else {
+                return gettext("Update not possible");
+            }
+        };
+
+        self.errorTextForEntry = function(data) {
+            if (!data.error) {
+                return "";
+            }
+
+            switch (data.error) {
+                case "unknown_check": {
+                    return gettext("Unknown update check, configuration ok?");
+                }
+                case "needs_online": {
+                    return gettext("Cannot check for update, need online connection");
+                }
+                case "network": {
+                    return gettext("Network error while checking for update");
+                }
+                case "unknown": {
+                    return gettext("Unknown error while checking for update, please check the logs");
+                }
+                default: {
+                    return "";
+                }
+            }
         };
 
         self._markNotificationAsSeen = function(data) {
@@ -605,6 +641,11 @@ $(function() {
                 clearTimeout(self.restartTimeout);
             }
             return true;
+        };
+
+        self.onEventConnectivityChanged = function(payload) {
+            if (!payload || !payload.new) return;
+            self.performCheck();
         };
 
         self.onDataUpdaterReconnect = function() {

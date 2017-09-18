@@ -466,13 +466,13 @@ $(function() {
             if (event) {
                 var element = $(event.currentTarget);
                 if (element.length) {
-                    var icon = $("i.icon-trash", element);
+                    var icon = $("i.fa-trash-o", element);
                     if (icon.length) {
                         activateSpinner = function() {
-                            icon.removeClass("icon-trash").addClass("icon-spinner icon-spin");
+                            icon.removeClass("fa-trash-o").addClass("fa-spinner fa-spin");
                         };
                         finishSpinner = function() {
-                            icon.removeClass("icon-spinner icon-spin").addClass("icon-trash");
+                            icon.removeClass("fa-spinner fa-spin").addClass("fa-trash-o");
                         };
                     }
                 }
@@ -581,7 +581,7 @@ $(function() {
 
             var additionalInfo = $(".additionalInfo", entryElement);
             additionalInfo.slideToggle("fast", function() {
-                $(".toggleAdditionalData i", entryElement).toggleClass("icon-chevron-down icon-chevron-up");
+                $(".toggleAdditionalData i", entryElement).toggleClass("fa-chevron-down fa-chevron-up");
             });
         };
 
@@ -952,6 +952,23 @@ $(function() {
             });
 
             self.requestData({focus: {location: "sdcard", path: payload.remote}});
+        };
+
+        self.onEventTransferFailed = function(payload) {
+            self.uploadProgress
+                .removeClass("progress-striped")
+                .removeClass("active");
+            self.uploadProgressBar
+                .css("width", "0");
+            self.uploadProgressText("");
+
+            new PNotify({
+                title: gettext("Streaming failed"),
+                text: _.sprintf(gettext("Did not finish streaming %(local)s to %(remote)s on SD"), payload),
+                type: "error"
+            });
+
+            self.requestData();
         };
 
         self.onServerConnect = self.onServerReconnect = function(payload) {
