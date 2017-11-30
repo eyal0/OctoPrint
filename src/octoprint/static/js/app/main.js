@@ -493,6 +493,7 @@ $(function() {
             log.debug("Selected OctoPrint tab changed: previous = " + previous + ", current = " + current);
             OctoPrint.coreui.selectedTab = current;
             callViewModels(allViewModels, "onTabChange", [current, previous]);
+            window.history.replaceState(window.history.state, "", current);
         };
 
         var tabs = $('#tabs a[data-toggle="tab"]');
@@ -508,8 +509,6 @@ $(function() {
             callViewModels(allViewModels, "onAfterTabChange", [current, previous]);
         });
 
-        onTabChange(OCTOPRINT_INITIAL_TAB);
-
         // Fix input element click problems on dropdowns
         $(".dropdown input, .dropdown label").click(function(e) {
             e.stopPropagation();
@@ -522,6 +521,15 @@ $(function() {
 
         // reload overlay
         $("#reloadui_overlay_reload").click(function() { location.reload(); });
+
+        var changeTab = function()
+        {
+            var hashtag = window.location.hash;
+
+            var tab = $('#tabs a[href="' + hashtag + '"]');
+            tab.tab("show");
+            onTabChange(hashtag);
+        }
 
         //~~ final initialization - passive login, settings fetch, view model binding
 
@@ -620,6 +628,15 @@ $(function() {
                 log.debug("Browser tab is now " + (status ? "visible" : "hidden"));
                 callViewModels(allViewModels, "onBrowserTabVisibilityChange", [status]);
             });
+
+            $(window).on("hashchange", function() {
+                changeTab();
+            });
+
+            if (window.location.hash != "")
+            {
+                changeTab();
+            }
 
             log.info("Application startup complete");
         };
