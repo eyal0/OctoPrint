@@ -7,9 +7,9 @@ __copyright__ = "Copyright (C) 2014 The OctoPrint Project - Released under terms
 
 import uuid
 from sockjs.tornado import SockJSRouter
-from flask import Flask, g, request, session, Blueprint, Request, Response
-from flask.ext.login import LoginManager, current_user
-from flask.ext.principal import Principal, Permission, RoleNeed, identity_loaded, UserNeed
+from flask import Flask, g, request, session, Blueprint, Request, Response, current_app
+from flask.ext.login import LoginManager, current_user, session_protected, user_logged_out
+from flask.ext.principal import Principal, Permission, RoleNeed, identity_loaded, identity_changed, UserNeed, AnonymousIdentity
 from flask.ext.babel import Babel, gettext, ngettext
 from flask.ext.assets import Environment, Bundle
 from babel import Locale
@@ -26,6 +26,11 @@ import logging.config
 import atexit
 import signal
 import base64
+
+try:
+	import fcntl
+except ImportError:
+	fcntl = None
 
 SUCCESS = {}
 NO_CONTENT = ("", 204)
@@ -49,6 +54,7 @@ pluginManager = None
 appSessionManager = None
 pluginLifecycleManager = None
 preemptiveCache = None
+connectivityChecker = None
 
 principals = Principal(app)
 admin_permission = Permission(RoleNeed("admin"))
@@ -95,6 +101,29 @@ def on_identity_loaded(sender, identity):
 		identity.provides.add(RoleNeed("user"))
 	if user.is_admin():
 		identity.provides.add(RoleNeed("admin"))
+
+
+def _clear_identity(sender):
+	# Remove session keys set by Flask-Principal
+	for key in ('identity.id', 'identity.name', 'identity.auth_type'):
+		if key in session:
+			del session[key]
+
+	# switch to anonymous identity
+	identity_changed.send(sender, identity=AnonymousIdentity())
+
+
+@session_protected.connect_via(app)
+def on_session_protected(sender):
+	# session was protected, that means the user is no more and we need to clear our identity
+	_clear_identity(sender)
+
+
+@user_logged_out.connect_via(app)
+def on_user_logged_out(sender, user=None):
+	# user was logged out, clear identity
+	_clear_identity(sender)
+
 
 def load_user(id):
 	if id == "_api":
@@ -160,6 +189,7 @@ class Server(object):
 		global appSessionManager
 		global pluginLifecycleManager
 		global preemptiveCache
+		global connectivityChecker
 		global debug
 		global safe_mode
 
@@ -189,6 +219,16 @@ class Server(object):
 		# start the intermediary server
 		self._start_intermediary_server()
 
+		### IMPORTANT!
+		###
+		### Best do not start any subprocesses until the intermediary server shuts down again or they MIGHT inherit the
+		### open port and prevent us from firing up Tornado later.
+		###
+		### The intermediary server's socket should have the CLOSE_EXEC flag (or its equivalent) set where possible, but
+		### we can only do that if fcntl is availabel or we are on Windows, so better safe than sorry.
+		###
+		### See also issues #2035 and #2090
+
 		# then initialize the plugin manager
 		pluginManager.reload_plugins(startup=True, initialize_implementations=False)
 
@@ -205,12 +245,46 @@ class Server(object):
 		pluginLifecycleManager = LifecycleManager(pluginManager)
 		preemptiveCache = PreemptiveCache(os.path.join(self._settings.getBaseFolder("data"), "preemptive_cache_config.yaml"))
 
+		# start regular check if we are connected to the internet
+		connectivityEnabled = self._settings.getBoolean(["server", "onlineCheck", "enabled"])
+		connectivityInterval = self._settings.getInt(["server", "onlineCheck", "interval"])
+		connectivityHost = self._settings.get(["server", "onlineCheck", "host"])
+		connectivityPort = self._settings.getInt(["server", "onlineCheck", "port"])
+
+		def on_connectivity_change(old_value, new_value):
+			eventManager.fire(events.Events.CONNECTIVITY_CHANGED, payload=dict(old=old_value, new=new_value))
+
+		connectivityChecker = octoprint.util.ConnectivityChecker(connectivityInterval,
+		                                                         connectivityHost,
+		                                                         port=connectivityPort,
+		                                                         enabled=connectivityEnabled,
+		                                                         on_change=on_connectivity_change)
+
+		def on_settings_update(*args, **kwargs):
+			# make sure our connectivity checker runs with the latest settings
+			connectivityEnabled = self._settings.getBoolean(["server", "onlineCheck", "enabled"])
+			connectivityInterval = self._settings.getInt(["server", "onlineCheck", "interval"])
+			connectivityHost = self._settings.get(["server", "onlineCheck", "host"])
+			connectivityPort = self._settings.getInt(["server", "onlineCheck", "port"])
+
+			if connectivityChecker.enabled != connectivityEnabled \
+					or connectivityChecker.interval != connectivityInterval \
+					or connectivityChecker.host != connectivityHost \
+					or connectivityChecker.port != connectivityPort:
+				connectivityChecker.enabled = connectivityEnabled
+				connectivityChecker.interval = connectivityInterval
+				connectivityChecker.host = connectivityHost
+				connectivityChecker.port = connectivityPort
+				connectivityChecker.check_immediately()
+
+		eventManager.subscribe(events.Events.SETTINGS_UPDATED, on_settings_update)
+
 		# setup access control
 		userManagerName = self._settings.get(["accessControl", "userManager"])
 		try:
 			clazz = octoprint.util.get_class(userManagerName)
 			userManager = clazz()
-		except AttributeError as e:
+		except:
 			self._logger.exception("Could not instantiate user manager {}, falling back to FilebasedUserManager!".format(userManagerName))
 			userManager = octoprint.users.FilebasedUserManager()
 		finally:
@@ -225,9 +299,32 @@ class Server(object):
 			file_manager=fileManager,
 			app_session_manager=appSessionManager,
 			plugin_lifecycle_manager=pluginLifecycleManager,
-			user_manager=userManager,
-			preemptive_cache=preemptiveCache
+			preemptive_cache=preemptiveCache,
+			connectivity_checker=connectivityChecker
 		)
+
+		# create user manager instance
+		user_manager_factories = pluginManager.get_hooks("octoprint.users.factory")
+		for name, factory in user_manager_factories.items():
+			try:
+				userManager = factory(components, self._settings)
+				if userManager is not None:
+					self._logger.debug("Created user manager instance from factory {}".format(name))
+					break
+			except:
+				self._logger.exception("Error while creating user manager instance from factory {}".format(name))
+		else:
+			name = self._settings.get(["accessControl", "userManager"])
+			try:
+				clazz = octoprint.util.get_class(name)
+				userManager = clazz()
+			except:
+				self._logger.exception(
+					"Could not instantiate user manager {}, falling back to FilebasedUserManager!".format(name))
+				userManager = octoprint.users.FilebasedUserManager()
+			finally:
+				userManager.enabled = self._settings.getBoolean(["accessControl", "enabled"])
+		components.update(dict(user_manager=userManager))
 
 		# create printer instance
 		printer_factories = pluginManager.get_hooks("octoprint.printer.factory")
@@ -344,7 +441,7 @@ class Server(object):
 		if not userManager.enabled:
 			loginManager.anonymous_user = users.DummyUser
 			principals.identity_loaders.appendleft(users.dummy_identity_loader)
-		loginManager.init_app(app)
+		loginManager.init_app(app, add_context_processor=False)
 
 		# register API blueprint
 		self._setup_blueprints()
@@ -359,7 +456,8 @@ class Server(object):
 		ioloop = IOLoop()
 		ioloop.install()
 
-		self._router = SockJSRouter(self._create_socket_connection, "/sockjs")
+		self._router = SockJSRouter(self._create_socket_connection, "/sockjs",
+		                            session_kls=util.sockjs.ThreadSafeSession)
 
 		upload_suffixes = dict(name=self._settings.get(["server", "uploads", "nameSuffix"]), path=self._settings.get(["server", "uploads", "pathSuffix"]))
 
@@ -486,7 +584,12 @@ class Server(object):
 		self._server = util.tornado.CustomHTTPServer(self._tornado_app, max_body_sizes=max_body_sizes, default_max_body_size=self._settings.getInt(["server", "maxSize"]))
 		self._server.listen(self._port, address=self._host)
 
+		### From now on it's ok to launch subprocesses again
+
 		eventManager.fire(events.Events.STARTUP)
+
+		# analysis backlog
+		fileManager.process_backlog()
 
 		# auto connect
 		if self._settings.getBoolean(["serial", "autoconnect"]):
@@ -1063,6 +1166,9 @@ class Server(object):
 			"js/lib/jquery/jquery.ui.widget.js",
 			"js/lib/jquery/jquery.ui.mouse.js",
 			"js/lib/jquery/jquery.flot.js",
+			"js/lib/jquery/jquery.flot.time.js",
+			"js/lib/jquery/jquery.flot.crosshair.js",
+			"js/lib/jquery/jquery.flot.resize.js",
 			"js/lib/jquery/jquery.iframe-transport.js",
 			"js/lib/jquery/jquery.fileupload.js",
 			"js/lib/jquery/jquery.slimscroll.min.js",
@@ -1270,21 +1376,44 @@ class Server(object):
 
 		rules = map(process, filter(lambda rule: len(rule) == 2 or len(rule) == 3, rules))
 
-		self._intermediary_server = BaseHTTPServer.HTTPServer((host, port), lambda *args, **kwargs: IntermediaryServerHandler(rules, *args, **kwargs))
+		self._intermediary_server = BaseHTTPServer.HTTPServer((host, port),
+		                                                      lambda *args, **kwargs: IntermediaryServerHandler(rules, *args, **kwargs),
+		                                                      bind_and_activate=False)
 
-		thread = threading.Thread(target=self._intermediary_server.serve_forever)
+		# if possible, make sure our socket's port descriptor isn't handed over to subprocesses
+		from octoprint.util.platform import set_close_exec
+		try:
+			set_close_exec(self._intermediary_server.fileno())
+		except:
+			self._logger.exception("Error while attempting to set_close_exec on intermediary server socket")
+
+		# then bind the server and have it serve our handler until stopped
+		try:
+			self._intermediary_server.server_bind()
+			self._intermediary_server.server_activate()
+		except:
+			self._intermediary_server.server_close()
+			raise
+
+		def serve():
+			try:
+				self._intermediary_server.serve_forever()
+			except:
+				self._logger.exception("Error in intermediary server")
+
+		thread = threading.Thread(target=serve)
 		thread.daemon = True
 		thread.start()
 
-		self._logger.debug("Intermediary server started")
+		self._logger.info("Intermediary server started")
 
 	def _stop_intermediary_server(self):
 		if self._intermediary_server is None:
 			return
-		self._logger.debug("Shutting down intermediary server...")
+		self._logger.info("Shutting down intermediary server...")
 		self._intermediary_server.shutdown()
 		self._intermediary_server.server_close()
-		self._logger.debug("Intermediary server shut down")
+		self._logger.info("Intermediary server shut down")
 
 class LifecycleManager(object):
 	def __init__(self, plugin_manager):
