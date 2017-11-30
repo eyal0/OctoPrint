@@ -493,6 +493,7 @@ $(function() {
             log.debug("Selected OctoPrint tab changed: previous = " + previous + ", current = " + current);
             OctoPrint.coreui.selectedTab = current;
             callViewModels(allViewModels, "onTabChange", [current, previous]);
+            window.history.replaceState(window.history.state, "", current);
         };
 
         var tabs = $('#tabs a[data-toggle="tab"]');
@@ -507,8 +508,6 @@ $(function() {
             var previous = e.relatedTarget.hash;
             callViewModels(allViewModels, "onAfterTabChange", [current, previous]);
         });
-
-        onTabChange(OCTOPRINT_INITIAL_TAB);
 
         // Fix input element click problems on dropdowns
         $(".dropdown input, .dropdown label").click(function(e) {
