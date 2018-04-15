@@ -8,9 +8,10 @@ __copyright__ = "Copyright (C) 2014 The OctoPrint Project - Released under terms
 
 import tornado.web
 import flask
-import flask.ext.login
-import flask.ext.principal
-import flask.ext.assets
+import flask.json
+import flask_login
+import flask_principal
+import flask_assets
 import webassets.updater
 import webassets.utils
 import functools
@@ -21,11 +22,15 @@ import threading
 import logging
 import netaddr
 import os
+import collections
 
 from octoprint.settings import settings
 import octoprint.server
 import octoprint.users
 import octoprint.plugin
+
+from octoprint.util import DefaultOrderedDict
+from octoprint.util.json import JsonEncoding
 
 from werkzeug.contrib.cache import BaseCache
 
@@ -42,7 +47,7 @@ def enable_additional_translations(default_locale="en", additional_folders=None)
 	import os
 	from flask import _request_ctx_stack
 	from babel import support, Locale
-	import flask.ext.babel
+	import flask_babel
 
 	if additional_folders is None:
 		additional_folders = []
@@ -93,7 +98,7 @@ def enable_additional_translations(default_locale="en", additional_folders=None)
 			return None
 		translations = getattr(ctx, 'babel_translations', None)
 		if translations is None:
-			locale = flask.ext.babel.get_locale()
+			locale = flask_babel.get_locale()
 			translations = support.Translations()
 
 			if str(locale) != default_locale:
@@ -131,8 +136,8 @@ def enable_additional_translations(default_locale="en", additional_folders=None)
 			ctx.babel_translations = translations
 		return translations
 
-	flask.ext.babel.Babel.list_translations = fixed_list_translations
-	flask.ext.babel.get_translations = fixed_get_translations
+	flask_babel.Babel.list_translations = fixed_list_translations
+	flask_babel.get_translations = fixed_get_translations
 
 def fix_webassets_cache():
 	from webassets import cache
@@ -230,6 +235,20 @@ def fix_webassets_filtertool():
 			return MemoryHunk(u"")
 
 	FilterTool._wrap_cache = fixed_wrap_cache
+
+def fix_flask_login_remote_address():
+	def fixed_get_remote_addr():
+		"""Backported from https://github.com/maxcountryman/flask-login/pull/217"""
+
+		from flask import request
+		address = request.headers.get('X-Forwarded-For', request.remote_addr)
+		if address is not None:
+			# An 'X-Forwarded-For' header includes a comma separated list of the
+			# addresses, the first address being the actual remote address.
+			address = address.encode('utf-8').split(b',')[0].strip()
+		return address
+
+	flask_login._get_remote_addr = fixed_get_remote_addr
 
 #~~ WSGI environment wrapper for reverse proxying
 
@@ -483,12 +502,13 @@ class OctoPrintFlaskResponse(flask.Response):
 
 def passive_login():
 	if octoprint.server.userManager.enabled:
-		user = octoprint.server.userManager.login_user(flask.ext.login.current_user)
+		user = octoprint.server.userManager.login_user(flask_login.current_user)
 	else:
-		user = flask.ext.login.current_user
+		user = flask_login.current_user
 
-	if user is not None and not user.is_anonymous():
-		flask.ext.principal.identity_changed.send(flask.current_app._get_current_object(), identity=flask.ext.principal.Identity(user.get_id()))
+	if user is not None and not user.is_anonymous() and user.is_active():
+		flask_principal.identity_changed.send(flask.current_app._get_current_object(),
+		                                      identity=flask_principal.Identity(user.get_id()))
 		if hasattr(user, "session"):
 			flask.session["usersession.id"] = user.session
 		flask.g.user = user
@@ -506,12 +526,13 @@ def passive_login():
 			remoteAddr = get_remote_address(flask.request)
 			if netaddr.IPAddress(remoteAddr) in localNetworks:
 				user = octoprint.server.userManager.findUser(autologinAs)
-				if user is not None:
+				if user is not None and user.is_active():
 					user = octoprint.server.userManager.login_user(user)
 					flask.session["usersession.id"] = user.session
 					flask.g.user = user
-					flask.ext.login.login_user(user)
-					flask.ext.principal.identity_changed.send(flask.current_app._get_current_object(), identity=flask.ext.principal.Identity(user.get_id()))
+					flask_login.login_user(user)
+					flask_principal.identity_changed.send(flask.current_app._get_current_object(),
+					                                      identity=flask_principal.Identity(user.get_id()))
 					return flask.jsonify(user.asDict())
 		except:
 			logger = logging.getLogger(__name__)
@@ -1056,14 +1077,14 @@ def _get_flask_user_from_request(request):
 	:return: the user or None if no user could be determined
 	"""
 	import octoprint.server.util
-	import flask.ext.login
+	import flask_login
 	from octoprint.settings import settings
 
 	apikey = octoprint.server.util.get_api_key(request)
 	if settings().getBoolean(["api", "enabled"]) and apikey is not None:
 		user = octoprint.server.util.get_user_for_apikey(apikey)
 	else:
-		user = flask.ext.login.current_user
+		user = flask_login.current_user
 
 	return user
 
@@ -1108,7 +1129,24 @@ def restricted_access(func):
 		if settings().getBoolean(["server", "firstRun"]) and settings().getBoolean(["accessControl", "enabled"]) and (octoprint.server.userManager is None or not octoprint.server.userManager.hasBeenCustomized()):
 			return flask.make_response("OctoPrint isn't setup yet", 403)
 
-		return flask.ext.login.login_required(func)(*args, **kwargs)
+		return flask_login.login_required(func)(*args, **kwargs)
+
+	return decorated_view
+
+
+def firstrun_only_access(func):
+	"""
+	If you decorate a view with this, it will ensure that first setup has _not_ been
+	done for OctoPrint's Access Control. Otherwise it
+	will cause a HTTP 403 status code to be returned by the decorated resource.
+	"""
+	@functools.wraps(func)
+	def decorated_view(*args, **kwargs):
+		# if OctoPrint has been set up yet, abort
+		if settings().getBoolean(["server", "firstRun"]) and (octoprint.server.userManager is None or not octoprint.server.userManager.hasBeenCustomized()):
+			return func(*args, **kwargs)
+		else:
+			return flask.make_response("OctoPrint is already setup, this resource is not longer available.", 403)
 
 	return decorated_view
 
@@ -1194,6 +1232,9 @@ def get_json_command_from_request(request, valid_commands):
 		return None, None, make_response("Expected content-type JSON", 400)
 
 	data = request.json
+	if data is None:
+		return None, None, make_response("Expected content-type JSON", 400)
+
 	if not "command" in data.keys() or not data["command"] in valid_commands.keys():
 		return None, None, make_response("Expected valid command", 400)
 
@@ -1206,7 +1247,7 @@ def get_json_command_from_request(request, valid_commands):
 
 ##~~ Flask-Assets resolver with plugin asset support
 
-class PluginAssetResolver(flask.ext.assets.FlaskResolver):
+class PluginAssetResolver(flask_assets.FlaskResolver):
 
 	def split_prefix(self, ctx, item):
 		app = ctx.environment._app
@@ -1215,14 +1256,14 @@ class PluginAssetResolver(flask.ext.assets.FlaskResolver):
 				prefix, plugin, name = item.split("/", 2)
 				blueprint = prefix + "." + plugin
 
-				directory = flask.ext.assets.get_static_folder(app.blueprints[blueprint])
+				directory = flask_assets.get_static_folder(app.blueprints[blueprint])
 				item = name
 				endpoint = blueprint + ".static"
 				return directory, item, endpoint
 			except (ValueError, KeyError):
 				pass
 
-		return flask.ext.assets.FlaskResolver.split_prefix(self, ctx, item)
+		return flask_assets.FlaskResolver.split_prefix(self, ctx, item)
 
 	def resolve_output_to_path(self, ctx, target, bundle):
 		import os
@@ -1301,7 +1342,6 @@ def collect_core_assets(enable_gcodeviewer=True, preferred_stylesheet="css"):
 		'js/app/viewmodels/terminal.js',
 		'js/app/viewmodels/timelapse.js',
 		'js/app/viewmodels/users.js',
-		'js/app/viewmodels/log.js',
 		'js/app/viewmodels/usersettings.js',
 		'js/app/viewmodels/wizard.js',
 		'js/app/viewmodels/about.js'
@@ -1327,8 +1367,12 @@ def collect_plugin_assets(enable_gcodeviewer=True, preferred_stylesheet="css"):
 	logger = logging.getLogger(__name__ + ".collect_plugin_assets")
 
 	supported_stylesheets = ("css", "less")
-	assets = dict(bundled=dict(js=[], css=[], less=[]),
-	              external=dict(js=[], css=[], less=[]))
+	assets = dict(bundled=dict(js=DefaultOrderedDict(list),
+	                           css=DefaultOrderedDict(list),
+	                           less=DefaultOrderedDict(list)),
+	              external=dict(js=DefaultOrderedDict(list),
+	                            css=DefaultOrderedDict(list),
+	                            less=DefaultOrderedDict(list)))
 
 	asset_plugins = octoprint.plugin.plugin_manager().get_implementations(octoprint.plugin.AssetPlugin)
 	for implementation in asset_plugins:
@@ -1354,13 +1398,13 @@ def collect_plugin_assets(enable_gcodeviewer=True, preferred_stylesheet="css"):
 			for asset in all_assets["js"]:
 				if not asset_exists("js", asset):
 					continue
-				assets[asset_key]["js"].append('plugin/{name}/{asset}'.format(**locals()))
+				assets[asset_key]["js"][name].append('plugin/{name}/{asset}'.format(**locals()))
 
 		if preferred_stylesheet in all_assets:
 			for asset in all_assets[preferred_stylesheet]:
 				if not asset_exists(preferred_stylesheet, asset):
 					continue
-				assets[asset_key][preferred_stylesheet].append('plugin/{name}/{asset}'.format(**locals()))
+				assets[asset_key][preferred_stylesheet][name].append('plugin/{name}/{asset}'.format(**locals()))
 		else:
 			for stylesheet in supported_stylesheets:
 				if not stylesheet in all_assets:
@@ -1369,7 +1413,16 @@ def collect_plugin_assets(enable_gcodeviewer=True, preferred_stylesheet="css"):
 				for asset in all_assets[stylesheet]:
 					if not asset_exists(stylesheet, asset):
 						continue
-					assets[asset_key][stylesheet].append('plugin/{name}/{asset}'.format(**locals()))
+					assets[asset_key][stylesheet][name].append('plugin/{name}/{asset}'.format(**locals()))
 				break
 
 	return assets
+
+##~~ JSON encoding
+
+class OctoPrintJsonEncoder(flask.json.JSONEncoder):
+	def default(self, obj):
+		try:
+			return JsonEncoding.encode(obj)
+		except TypeError:
+			return flask.json.JSONEncoder.default(self, obj)

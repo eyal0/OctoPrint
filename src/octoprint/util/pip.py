@@ -11,6 +11,7 @@ import sys
 import logging
 import site
 import threading
+import os
 
 import pkg_resources
 
@@ -24,9 +25,38 @@ class UnknownPip(Exception):
 	pass
 
 class PipCaller(CommandlineCaller):
-	process_dependency_links = pkg_resources.parse_requirements("pip>=1.5")
-	no_use_wheel = pkg_resources.parse_requirements("pip==1.5.0")
-	broken = pkg_resources.parse_requirements("pip>=6.0.1,<=6.0.3")
+	process_dependency_links = pkg_resources.Requirement.parse("pip>=1.5")
+	no_use_wheel = pkg_resources.Requirement.parse("pip==1.5.0")
+	broken = pkg_resources.Requirement.parse("pip>=6.0.1,<=6.0.3")
+
+	@classmethod
+	def clean_install_command(cls, args, pip_version, virtual_env, use_user, force_user):
+		logger = logging.getLogger(__name__)
+		args = list(args)
+
+		# strip --process-dependency-links for versions that don't support it
+		if not pip_version in cls.process_dependency_links and "--process-dependency-links" in args:
+			logger.debug(
+				"Found --process-dependency-links flag, version {} doesn't need that yet though, removing.".format(
+					pip_version))
+			args.remove("--process-dependency-links")
+
+		# add --no-use-wheel for versions that otherwise break
+		if pip_version in cls.no_use_wheel and not "--no-use-wheel" in args:
+			logger.debug("Version {} needs --no-use-wheel to properly work.".format(pip_version))
+			args.append("--no-use-wheel")
+
+		# remove --user if it's present and a virtual env is detected
+		if "--user" in args:
+			if virtual_env or not site.ENABLE_USER_SITE:
+				logger.debug("Virtual environment detected, removing --user flag.")
+				args.remove("--user")
+		# otherwise add it if necessary
+		elif not virtual_env and site.ENABLE_USER_SITE and (use_user or force_user):
+			logger.debug("pip needs --user flag for installations.")
+			args.append("--user")
+
+		return args
 
 	def __init__(self, configured=None, ignore_cache=False, force_sudo=False,
 	             force_user=False):
@@ -126,25 +156,8 @@ class PipCaller(CommandlineCaller):
 		arg_list = list(args)
 
 		if "install" in arg_list:
-			# strip --process-dependency-links for versions that don't support it
-			if not self.version in self.__class__.process_dependency_links and "--process-dependency-links" in arg_list:
-				self._logger.debug("Found --process-dependency-links flag, version {} doesn't need that yet though, removing.".format(self.version))
-				arg_list.remove("--process-dependency-links")
-
-			# add --no-use-wheel for versions that otherwise break
-			if self.version in self.__class__.no_use_wheel and not "--no-use-wheel" in arg_list:
-				self._logger.debug("Version {} needs --no-use-wheel to properly work.".format(self.version))
-				arg_list.append("--no-use-wheel")
-
-			# remove --user if it's present and a virtual env is detected
-			if "--user" in arg_list:
-				if self._virtual_env or not site.ENABLE_USER_SITE:
-					self._logger.debug("Virtual environment detected, removing --user flag.")
-					arg_list.remove("--user")
-			# otherwise add it if necessary
-			elif not self._virtual_env and site.ENABLE_USER_SITE and (self.use_user or self.force_user):
-				self._logger.debug("pip needs --user flag for installations.")
-				arg_list.append("--user")
+			arg_list = self.clean_install_command(arg_list, self.version, self._virtual_env, self.use_user,
+			                                      self.force_user)
 
 		# add args to command
 		if isinstance(self._command, list):
@@ -172,7 +185,8 @@ class PipCaller(CommandlineCaller):
 			return
 
 		if pip_version in self.__class__.broken:
-			self._logger.error("This version of pip is known to have bugs that make it incompatible with how it needs to be used by OctoPrint. Please upgrade your pip version.")
+			self._logger.error("This version of pip is known to have bugs that make it incompatible with how it needs "
+			                   "to be used by OctoPrint. Please upgrade your pip version.")
 			return
 
 		# Now figure out if pip belongs to a virtual environment and if the
@@ -191,7 +205,12 @@ class PipCaller(CommandlineCaller):
 
 		ok, pip_user, pip_virtual_env, pip_install_dir = self._check_pip_setup(pip_command)
 		if not ok:
-			self._logger.error("Cannot use pip")
+			if pip_install_dir:
+				self._logger.error("Cannot use this pip install, can't write to the install dir and also can't use "
+				                   "--user for installing. Check your setup and the permissions on {}.".format(pip_install_dir))
+			else:
+				self._logger.error("Cannot use this pip install, something's wrong with the python environment. "
+				                   "Check the lines before.")
 			return
 
 		self._command = pip_command
@@ -219,6 +238,10 @@ class PipCaller(CommandlineCaller):
 	@classmethod
 	def autodetect_pip(cls):
 		commands = [[sys.executable, "-m", "pip"],
+		            [os.path.join(os.path.dirname(sys.executable), "pip.exe" if sys.platform == "win32" else "pip")],
+
+		            # this should be our last resort since it might fail thanks to using pip programmatically like
+		            # that is not officially supported or sanctioned by the pip developers
 		            [sys.executable, "-c", "import sys; sys.argv = ['pip'] + sys.argv[1:]; import pip; pip.main()"]]
 
 		for command in commands:
@@ -359,17 +382,19 @@ class PipCaller(CommandlineCaller):
 				ok = writable or can_use_user_flag
 				user_flag = not writable and can_use_user_flag
 
-				self._logger.info("pip installs to {}, --user flag needed => {}, "
-				                  "virtual env => {}".format(install_dir,
+				self._logger.info("pip installs to {} (writable -> {}), --user flag needed -> {}, "
+				                  "virtual env -> {}".format(install_dir,
+				                                             "yes" if writable else "no",
 				                                             "yes" if user_flag else "no",
 				                                             "yes" if virtual_env else "no"))
+				self._logger.info("==> pip ok -> {}".format("yes" if ok else "NO!"))
 
 				# ok, enable user flag, virtual env yes/no, installation dir
 				result = ok, user_flag, virtual_env, install_dir
 				_cache["setup"][pip_command_str] = result
 				return result
 			else:
-				self._logger.debug("Could not detect desired output from testballoon install, got this instead: {!r}".format(data))
+				self._logger.error("Could not detect desired output from testballoon install, got this instead: {!r}".format(data))
 				return False, False, False, None
 
 	def _preprocess_lines(self, *lines):
@@ -413,8 +438,18 @@ class LocalPipCaller(PipCaller):
 		writable = os.access(install_dir, os.W_OK)
 
 		can_use_user_flag = not virtual_env and site.ENABLE_USER_SITE
+		user_flag = not writable and can_use_user_flag
 
-		return writable or can_use_user_flag, \
-		       not writable and can_use_user_flag, \
+		ok = writable or can_use_user_flag
+
+		self._logger.info("pip installs to {} (writable -> {}), --user flag needed -> {}, "
+		                  "virtual env -> {}".format(install_dir,
+		                                             "yes" if writable else "no",
+		                                             "yes" if user_flag else "no",
+		                                             "yes" if virtual_env else "no"))
+		self._logger.info("==> pip ok -> {}".format("yes" if ok else "NO!"))
+
+		return ok, \
+		       user_flag, \
 		       virtual_env, \
 		       install_dir

@@ -22,6 +22,7 @@ from octoprint.server.api import api
 
 from octoprint.server import NO_CONTENT
 
+_DATA_FORMAT_VERSION = "v2"
 
 #~~ timelapse handling
 
@@ -36,13 +37,13 @@ def _config_for_timelapse(timelapse):
 		return dict(type="zchange",
 		            postRoll=timelapse.post_roll,
 		            fps=timelapse.fps,
-		            retractionZHop=timelapse.retraction_zhop)
+		            retractionZHop=timelapse.retraction_zhop,
+		            minDelay=timelapse.min_delay)
 	elif timelapse is not None and isinstance(timelapse, octoprint.timelapse.TimedTimelapse):
 		return dict(type="timed",
 		            postRoll=timelapse.post_roll,
 		            fps=timelapse.fps,
-		            interval=timelapse.interval,
-		            capturePostRoll=timelapse.capture_post_roll)
+		            interval=timelapse.interval)
 	else:
 		return dict(type="off")
 
@@ -67,6 +68,7 @@ def _etag(unrendered, lm=None):
 	hash = hashlib.sha1()
 	hash.update(str(lm))
 	hash.update(repr(config))
+	hash.update(repr(_DATA_FORMAT_VERSION))
 
 	return hash.hexdigest()
 
@@ -125,7 +127,7 @@ def downloadTimelapse(filename):
 @api.route("/timelapse/<filename>", methods=["DELETE"])
 @restricted_access
 def deleteTimelapse(filename):
-	if util.is_allowed_file(filename, ["mpg", "mpeg", "mp4"]):
+	if util.is_allowed_file(filename, ["mpg", "mpeg", "mp4", "m4v", "mkv"]):
 		timelapse_folder = settings().getBaseFolder("timelapse")
 		full_path = os.path.realpath(os.path.join(timelapse_folder, filename))
 		if full_path.startswith(timelapse_folder) and os.path.exists(full_path):
@@ -213,17 +215,6 @@ def setTimelapseConfig():
 				else:
 					return make_response("Invalid value for interval: %d" % interval, 400)
 
-		if "capturePostRoll" in data:
-			try:
-				capturePostRoll = bool(data["capturePostRoll"])
-			except ValueError:
-				return make_response("Invalid value for capturePostRoll: %r" % data["capturePostRoll"], 400)
-			else:
-				if capturePostRoll >= 0:
-					config["options"]["capturePostRoll"] = capturePostRoll
-				else:
-					return make_response("Invalid value for capturePostRoll: %d" % capturePostRoll, 400)
-
 		if "retractionZHop" in data:
 			try:
 				retractionZHop = float(data["retractionZHop"])
@@ -233,8 +224,18 @@ def setTimelapseConfig():
 				if retractionZHop >= 0:
 					config["options"]["retractionZHop"] = retractionZHop
 				else:
-					return make_response("Invalid value for retraction Z-Hop: %d" % retractionZHop, 400)
+					return make_response("Invalid value for retraction Z-Hop: %f" % retractionZHop, 400)
 
+		if "minDelay" in data:
+			try:
+				minDelay = float(data["minDelay"])
+			except ValueError:
+				return make_response("Invalid value for minimum delay: %r" % data["minDelay"], 400)
+			else:
+				if minDelay > 0:
+					config["options"]["minDelay"] = minDelay
+				else:
+					return make_response("Invalid value for minimum delay: %f" % minDelay, 400)
 
 		if admin_permission.can() and "save" in data and data["save"] in valid_boolean_trues:
 			octoprint.timelapse.configure_timelapse(config, True)

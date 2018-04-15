@@ -226,6 +226,10 @@ $(function() {
                 }
             }
 
+            if (!control.hasOwnProperty("additionalClasses")) {
+                control.additionalClasses = "";
+            }
+
             control.processed = true;
             return control;
         };
@@ -402,6 +406,8 @@ $(function() {
         };
 
         self.onWebcamLoaded = function() {
+            if (self.webcamLoaded()) return;
+
             log.debug("Webcam stream loaded");
             self.webcamLoaded(true);
             self.webcamError(false);
@@ -552,9 +558,9 @@ $(function() {
 
     }
 
-    OCTOPRINT_VIEWMODELS.push([
-        ControlViewModel,
-        ["loginStateViewModel", "settingsViewModel"],
-        "#control"
-    ]);
+    OCTOPRINT_VIEWMODELS.push({
+        construct: ControlViewModel,
+        dependencies: ["loginStateViewModel", "settingsViewModel"],
+        elements: ["#control"]
+    });
 });

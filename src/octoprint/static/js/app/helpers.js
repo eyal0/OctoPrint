@@ -416,7 +416,7 @@ function formatFuzzyPrintTime(totalSeconds) {
     var seconds = d.seconds();
     var minutes = d.minutes();
     var hours = d.hours();
-    var days = d.asDays();
+    var days = d.days();
 
     var replacements = {
         days: days,
@@ -432,11 +432,16 @@ function formatFuzzyPrintTime(totalSeconds) {
         // days
         if (hours >= 16) {
             replacements.days += 1;
-            text = gettext("%(days)d days");
+
+            if (replacements.days === 1) {
+                text = gettext("%(days)d day");
+            } else {
+                text = gettext("%(days)d days");
+            }
         } else if (hours >= 8 && hours < 16) {
             text = gettext("%(days)d.5 days");
         } else {
-            if (days == 1) {
+            if (days === 1) {
                 text = gettext("%(days)d day");
             } else {
                 text = gettext("%(days)d days");
@@ -447,7 +452,7 @@ function formatFuzzyPrintTime(totalSeconds) {
         if (hours < 12) {
             if (minutes < 15) {
                 // less than .15 => .0
-                if (hours == 1) {
+                if (hours === 1) {
                     text = gettext("%(hours)d hour");
                 } else {
                     text = gettext("%(hours)d hours");
@@ -458,10 +463,15 @@ function formatFuzzyPrintTime(totalSeconds) {
             } else {
                 // over .75 => hours + 1
                 replacements.hours += 1;
-                text = gettext("%(hours)d hours");
+
+                if (replacements.hours === 1) {
+                    text = gettext("%(hours)d hour");
+                } else {
+                    text = gettext("%(hours)d hours");
+                }
             }
         } else {
-            if (hours == 23 && minutes > 30) {
+            if (hours === 23 && minutes > 30) {
                 // over 23.5 hours => 1 day
                 text = gettext("1 day");
             } else {
@@ -901,15 +911,12 @@ function splitTextToArray(text, sep, stripEmpty, filter) {
  * and is optimized to check for value changes, not key updates.
  */
 function hasDataChanged(data, oldData) {
-    if (data == undefined) {
+    // noinspection EqualityComparisonWithCoercionJS
+    if (data == oldData && data == undefined) {
         return false;
     }
 
-    if (oldData == undefined) {
-        return true;
-    }
-
-    if (_.isPlainObject(data)) {
+    if (_.isPlainObject(data) && _.isPlainObject(oldData)) {
         return _.any(_.keys(data), function(key) {return hasDataChanged(data[key], oldData[key]);});
     } else {
         return !_.isEqual(data, oldData);
@@ -946,10 +953,12 @@ function hasDataChanged(data, oldData) {
  * and is optimized to check for value changes, not key updates.
  */
 function getOnlyChangedData(data, oldData) {
+    // noinspection EqualityComparisonWithCoercionJS
     if (data == undefined) {
         return {};
     }
 
+    // noinspection EqualityComparisonWithCoercionJS
     if (oldData == undefined) {
         return data;
     }
@@ -962,17 +971,20 @@ function getOnlyChangedData(data, oldData) {
         var retval = {};
         _.forOwn(root, function(value, key) {
             var oldValue = undefined;
+            // noinspection EqualityComparisonWithCoercionJS
             if (oldRoot != undefined && oldRoot.hasOwnProperty(key)) {
                 oldValue = oldRoot[key];
             }
             if (_.isPlainObject(value)) {
+                // noinspection EqualityComparisonWithCoercionJS
                 if (oldValue == undefined) {
                     retval[key] = value;
                 } else if (hasDataChanged(value, oldValue)) {
                     retval[key] = f(value, oldValue);
                 }
             } else {
-                if (!_.isEqual(value, oldValue)) {
+                // noinspection EqualityComparisonWithCoercionJS
+                if (!(value == oldValue && value == undefined) && !_.isEqual(value, oldValue)) {
                     retval[key] = value;
                 }
             }
@@ -988,28 +1000,60 @@ function setOnViewModels(allViewModels, key, value) {
 }
 
 function setOnViewModelsIf(allViewModels, key, value, condition) {
+    if (!allViewModels) return;
+    _.each(allViewModels, function(viewModel) {
+        setOnViewModelIf(viewModel, key, value, condition);
+    })
+}
+
+function setOnViewModel(viewModel, key, value) {
+    setOnViewModelIf(viewModel, key, value, undefined);
+}
+
+function setOnViewModelIf(viewModel, key, value, condition) {
     if (condition === undefined || !_.isFunction(condition)) {
         condition = function() { return true; };
     }
 
-    _.each(allViewModels, function(viewModel) {
-        if (condition(viewModel)) {
-            viewModel[key] = value;
+    try {
+        if (!condition(viewModel)) {
+            return;
         }
-    })
+
+        viewModel[key] = value;
+    } catch (exc) {
+        log.error("Error while setting", key, "to", value, "on view model", viewModel.constructor.name, ":", (exc.stack || exc));
+    }
 }
 
 function callViewModels(allViewModels, method, callback) {
-    if (!allViewModels) return;
     callViewModelsIf(allViewModels, method, undefined, callback);
 }
 
 function callViewModelsIf(allViewModels, method, condition, callback) {
     if (!allViewModels) return;
 
-    if (condition == undefined || !_.isFunction(condition)) {
+    _.each(allViewModels, function(viewModel) {
+        try {
+            callViewModelIf(viewModel, method, condition, callback);
+        } catch (exc) {
+            log.error("Error calling", method, "on view model", viewModel.constructor.name, ":", (exc.stack || exc));
+        }
+    });
+}
+
+function callViewModel(viewModel, method, callback, raiseErrors) {
+    callViewModelIf(viewModel, method, undefined, callback, raiseErrors);
+}
+
+function callViewModelIf(viewModel, method, condition, callback, raiseErrors) {
+    raiseErrors = raiseErrors === true || false;
+
+    if (condition === undefined || !_.isFunction(condition)) {
         condition = function() { return true; };
     }
+
+    if (!viewModel.hasOwnProperty(method) || !_.isFunction(viewModel[method]) || !condition(viewModel, method)) return;
 
     var parameters = undefined;
     if (!_.isFunction(callback)) {
@@ -1017,14 +1061,14 @@ function callViewModelsIf(allViewModels, method, condition, callback) {
         // call the view model method instead of providing it to the callback
         // - let's figure out how
 
-        if (callback == undefined) {
+        if (callback === undefined) {
             // directly call view model method with no parameters
             parameters = undefined;
-            log.trace("Calling method", method, "on view models");
+            log.trace("Calling method", method, "on view model");
         } else if (_.isArray(callback)) {
             // directly call view model method with these parameters
             parameters = callback;
-            log.trace("Calling method", method, "on view models with specified parameters", parameters);
+            log.trace("Calling method", method, "on view model with specified parameters", parameters);
         } else {
             // ok, this doesn't make sense, callback is neither undefined nor
             // an array, we'll return without doing anything
@@ -1035,29 +1079,29 @@ function callViewModelsIf(allViewModels, method, condition, callback) {
         // the method directly
         callback = undefined;
     } else {
-        log.trace("Providing method", method, "on view models to specified callback", callback);
+        log.trace("Providing method", method, "on view model to specified callback", callback);
     }
 
-    _.each(allViewModels, function(viewModel) {
-        if (viewModel.hasOwnProperty(method) && condition(viewModel, method)) {
-            try {
-                if (callback == undefined) {
-                    if (parameters != undefined) {
-                        // call the method with the provided parameters
-                        viewModel[method].apply(viewModel, parameters);
-                    } else {
-                        // call the method without parameters
-                        viewModel[method]();
-                    }
-                } else {
-                    // provide the method to the callback
-                    callback(viewModel[method], viewModel);
-                }
-            } catch (exc) {
-                log.error("Error calling", method, "on view model", viewModel.constructor.name, ":", (exc.stack || exc));
+    try {
+        if (callback === undefined) {
+            if (parameters !== undefined) {
+                // call the method with the provided parameters
+                viewModel[method].apply(viewModel, parameters);
+            } else {
+                // call the method without parameters
+                viewModel[method]();
             }
+        } else {
+            // provide the method to the callback
+            callback(viewModel[method], viewModel);
         }
-    });
+    } catch (exc) {
+        if (raiseErrors) {
+            throw exc;
+        } else {
+            log.error("Error calling", method, "on view model", viewModel.constructor.name, ":", (exc.stack || exc));
+        }
+    }
 }
 
 var sizeObservable = function(observable) {
@@ -1119,4 +1163,12 @@ var escapeUnprintableCharacters = function(str) {
         index++;
     }
     return result;
+};
+
+var copyToClipboard = function(text) {
+    var temp = $("<textarea>");
+    $("body").append(temp);
+    temp.val(text).select();
+    document.execCommand("copy");
+    temp.remove();
 };

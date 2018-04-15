@@ -237,7 +237,7 @@ UpdatedFiles
 
        .. deprecated:: 1.2.0
 
-          The ``gcode`` modification type has been superceeded by ``printables``. It is currently still available for
+          The ``gcode`` modification type has been superseded by ``printables``. It is currently still available for
           reasons of backwards compatibility and will also be sent on modification of ``printables``. It will however
           be removed with 1.4.0.
 
@@ -265,7 +265,7 @@ MetadataAnalysisFinished
      * ``name``: the file's name
      * ``path``: the file's path within its storage location
      * ``origin``: the file's origin storage location
-     * ``result``: the analysis result -- this is a python object currently only available for internal use
+     * ``result``: the analysis result -- this is a Python object currently only available for internal use
 
    .. deprecated:: 1.3.0
 
@@ -363,8 +363,18 @@ PrintDone
 
       Still available for reasons of backwards compatibility. Will be removed with 1.4.0.
 
+PrintCancelling
+   The print is about to be cancelled.
+
+   Payload:
+
+     * ``name``: the file's name
+     * ``path``: the file's path within its storage location
+     * ``origin``: the origin storage location of the file, either ``local`` or ``sdcard``
+     * ``firmwareError``: the firmware error that caused cancelling the print job, if any
+
 PrintCancelled
-   The print has been cancelled via the cancel button.
+   The print has been cancelled.
 
    Payload:
 

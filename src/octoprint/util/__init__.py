@@ -1,11 +1,10 @@
 # coding=utf-8
-from __future__ import absolute_import
+from __future__ import absolute_import, division, print_function
 
 """
-This module bundles commonly used utility methods or helper classes that are used in multiple places withing
+This module bundles commonly used utility methods or helper classes that are used in multiple places within
 OctoPrint's source code.
 """
-from __future__ import absolute_import, division, print_function
 
 __author__ = "Gina Häußge <osd@foosel.net>"
 __license__ = 'GNU Affero General Public License http://www.gnu.org/licenses/agpl.html'
@@ -21,6 +20,9 @@ import threading
 from functools import wraps
 import warnings
 import contextlib
+import collections
+import frozendict
+import copy
 
 try:
 	import queue
@@ -460,7 +462,7 @@ def is_running_from_source():
 	return os.path.isdir(os.path.join(root, "src")) and os.path.isfile(os.path.join(root, "setup.py"))
 
 
-def dict_merge(a, b):
+def dict_merge(a, b, leaf_merger=None):
 	"""
 	Recursively deep-merges two dictionaries.
 
@@ -479,10 +481,24 @@ def dict_merge(a, b):
 	    True
 	    >>> dict_merge(None, None) == dict()
 	    True
+	    >>> def leaf_merger(a, b):
+	    ...     if isinstance(a, list) and isinstance(b, list):
+	    ...         return a + b
+	    ...     raise ValueError()
+	    >>> result = dict_merge(dict(l1=[3, 4], l2=[1], a="a"), dict(l1=[1, 2], l2="foo", b="b"), leaf_merger=leaf_merger)
+	    >>> result.get("l1") == [3, 4, 1, 2]
+	    True
+	    >>> result.get("l2") == "foo"
+	    True
+	    >>> result.get("a") == "a"
+	    True
+	    >>> result.get("b") == "b"
+	    True
 
 	Arguments:
 	    a (dict): The dictionary to merge ``b`` into
 	    b (dict): The dictionary to merge into ``a``
+	    leaf_merger (callable): An optional callable to use to merge leaves (non-dict values)
 
 	Returns:
 	    dict: ``b`` deep-merged into ``a``
@@ -500,9 +516,20 @@ def dict_merge(a, b):
 	result = deepcopy(a)
 	for k, v in b.items():
 		if k in result and isinstance(result[k], dict):
-			result[k] = dict_merge(result[k], v)
+			result[k] = dict_merge(result[k], v, leaf_merger=leaf_merger)
 		else:
-			result[k] = deepcopy(v)
+			merged = None
+			if k in result and callable(leaf_merger):
+				try:
+					merged = leaf_merger(result[k], v)
+				except ValueError:
+					# can't be merged by leaf merger
+					pass
+
+			if merged is None:
+				merged = deepcopy(v)
+
+			result[k] = merged
 	return result
 
 
@@ -713,6 +740,51 @@ def dict_filter(dictionary, filter_function):
 	return dict((k, v) for k, v in dictionary.items() if filter_function(k, v))
 
 
+# Source: http://stackoverflow.com/a/6190500/562769
+class DefaultOrderedDict(collections.OrderedDict):
+	def __init__(self, default_factory=None, *a, **kw):
+
+		if default_factory is not None and not callable(default_factory):
+			raise TypeError('first argument must be callable')
+		collections.OrderedDict.__init__(self, *a, **kw)
+		self.default_factory = default_factory
+
+	def __getitem__(self, key):
+		try:
+			return collections.OrderedDict.__getitem__(self, key)
+		except KeyError:
+			return self.__missing__(key)
+
+	def __missing__(self, key):
+		if self.default_factory is None:
+			raise KeyError(key)
+		self[key] = value = self.default_factory()
+		return value
+
+	def __reduce__(self):
+		if self.default_factory is None:
+			args = tuple()
+		else:
+			args = self.default_factory,
+		return type(self), args, None, None, self.items()
+
+	def copy(self):
+		return self.__copy__()
+
+	def __copy__(self):
+		return type(self)(self.default_factory, self)
+
+	def __deepcopy__(self, memo):
+		import copy
+		return type(self)(self.default_factory,
+		                  copy.deepcopy(self.items()))
+
+	# noinspection PyMethodOverriding
+	def __repr__(self):
+		return 'OrderedDefaultDict(%s, %s)' % (self.default_factory,
+		                                       collections.OrderedDict.__repr__(self))
+
+
 class Object(object):
 	pass
 
@@ -846,8 +918,10 @@ def is_hidden_path(path):
 		# we define a None path as not hidden here
 		return False
 
+	path = to_unicode(path)
+
 	filename = os.path.basename(path)
-	if filename.startswith("."):
+	if filename.startswith(u"."):
 		# filenames starting with a . are hidden
 		return True
 
@@ -856,7 +930,7 @@ def is_hidden_path(path):
 		# attribute via the windows api
 		try:
 			import ctypes
-			attrs = ctypes.windll.kernel32.GetFileAttributesW(unicode(path))
+			attrs = ctypes.windll.kernel32.GetFileAttributesW(path)
 			assert attrs != -1     # INVALID_FILE_ATTRIBUTES == -1
 			return bool(attrs & 2) # FILE_ATTRIBUTE_HIDDEN == 2
 		except (AttributeError, AssertionError):
@@ -864,6 +938,86 @@ def is_hidden_path(path):
 
 	# if we reach that point, the path is not hidden
 	return False
+
+
+try:
+	from glob import escape
+	glob_escape = escape
+except ImportError:
+	# no glob.escape - we need to implement our own
+	_glob_escape_check = re.compile("([*?[])")
+	_glob_escape_check_bytes = re.compile(b"([*?[])")
+
+	def glob_escape(pathname):
+		"""
+		Ported from Python 3.4
+
+		See https://github.com/python/cpython/commit/fd32fffa5ada8b8be8a65bd51b001d989f99a3d3
+		"""
+
+		drive, pathname = os.path.splitdrive(pathname)
+		if isinstance(pathname, bytes):
+			pathname = _glob_escape_check_bytes.sub(br"[\1]", pathname)
+		else:
+			pathname = _glob_escape_check.sub(r"[\1]", pathname)
+		return drive + pathname
+
+
+try:
+	import monotonic
+	monotonic_time = monotonic.monotonic
+except RuntimeError:
+	# no source of monotonic time available, nothing left but using time.time *cringe*
+	import time
+	monotonic_time = time.time
+
+
+def thaw_frozendict(obj):
+	if not isinstance(obj, (dict, frozendict.frozendict)):
+		raise ValueError("obj must be a dict or frozendict instance")
+
+	# only true love can thaw a frozen dict
+	letitgo = dict()
+	for key, value in obj.items():
+		if isinstance(value, (dict, frozendict.frozendict)):
+			letitgo[key] = thaw_frozendict(value)
+		else:
+			letitgo[key] = copy.deepcopy(value)
+	return letitgo
+
+
+def utmify(link, source=None, medium=None, name=None, term=None, content=None):
+	if source is None:
+		return link
+
+	from collections import OrderedDict
+	try:
+		import urlparse
+		from urllib import urlencode
+	except ImportError:
+		# python 3
+		import urllib.parse as urlparse
+		from urllib.parse import urlencode
+
+	# inspired by https://stackoverflow.com/a/2506477
+	parts = list(urlparse.urlparse(link))
+
+	# parts[4] is the url query
+	query = OrderedDict(urlparse.parse_qs(parts[4]))
+
+	query["utm_source"] = source
+	if medium is not None:
+		query["utm_medium"] = medium
+	if name is not None:
+		query["utm_name"] = name
+	if term is not None:
+		query["utm_term"] = term
+	if content is not None:
+		query["utm_content"] = content
+
+	parts[4] = urlencode(query, doseq=True)
+
+	return urlparse.urlunparse(parts)
 
 
 class RepeatedTimer(threading.Thread):
@@ -998,16 +1152,106 @@ class RepeatedTimer(threading.Thread):
 		if callable(self.on_finish):
 			self.on_finish()
 
+class ResettableTimer(threading.Thread):
+	"""
+	This class represents an action that should be run after a specified amount of time. It is similar to python's
+	own :class:`threading.Timer` class, with the addition of being able to reset the counter to zero.
+
+	ResettableTimers are started, as with threads, by calling their ``start()`` method. The timer can be stopped (in
+	between runs) by calling the :func:`cancel` method. Resetting the counter can be done with the :func:`reset` method.
+
+	For example:
+
+	.. code-block:: python
+
+	   def hello():
+	       print("Ran hello() at {}").format(time.time())
+
+	   t = ResettableTimers(60.0, hello)
+	   t.start()
+	   print("Started at {}").format(time.time())
+	   time.sleep(30)
+	   t.reset()
+	   print("Reset at {}").format(time.time())
+
+	Arguments:
+	    interval (float or callable): The interval before calling ``function``, in seconds. Can also be a callable
+	        returning the interval to use, in case the interval is not static.
+	    function (callable): The function to call.
+	    args (list or tuple): The arguments for the ``function`` call. Defaults to an empty list.
+	    kwargs (dict): The keyword arguments for the ``function`` call. Defaults to an empty dict.
+	    on_cancelled (callable): Callback to call when the timer finishes due to being cancelled.
+	    on_reset (callable): Callback to call when the timer is reset.
+	"""
+
+	def __init__(self, interval, function, args=None, kwargs=None, on_reset=None, on_cancelled=None):
+		threading.Thread.__init__(self)
+		self._event = threading.Event()
+		self._mutex = threading.Lock()
+		self.is_reset = True
+
+		if args is None:
+			args = []
+		if kwargs is None:
+			kwargs = dict()
+
+		self.interval = interval
+		self.function = function
+		self.args = args
+		self.kwargs = kwargs
+		self.on_cancelled = on_cancelled
+		self.on_reset = on_reset
+
+
+	def run(self):
+		while self.is_reset:
+			with self._mutex:
+				self.is_reset = False
+			self._event.wait(self.interval)
+
+		if not self._event.isSet():
+			self.function(*self.args, **self.kwargs)
+		with self._mutex:
+			self._event.set()
+
+	def cancel(self):
+		with self._mutex:
+			self._event.set()
+
+		if callable(self.on_cancelled):
+			self.on_cancelled()
+
+	def reset(self, interval=None):
+		with self._mutex:
+			if interval:
+				self.interval = interval
+
+			self.is_reset = True
+			self._event.set()
+			self._event.clear()
+
+		if callable(self.on_reset):
+			self.on_reset()
+
 
 class CountedEvent(object):
 
 	def __init__(self, value=0, maximum=None, **kwargs):
 		self._counter = 0
 		self._max = kwargs.get("max", maximum)
-		self._mutex = threading.Lock()
+		self._mutex = threading.RLock()
 		self._event = threading.Event()
 
 		self._internal_set(value)
+
+	@property
+	def is_set(self):
+		return self._event.is_set
+
+	@property
+	def counter(self):
+		with self._mutex:
+			return self._counter
 
 	def set(self):
 		with self._mutex:
@@ -1024,8 +1268,13 @@ class CountedEvent(object):
 		self._event.wait(timeout)
 
 	def blocked(self):
-		with self._mutex:
-			return self._counter == 0
+		return self.counter == 0
+
+	def acquire(self, blocking=1):
+		return self._mutex.acquire(blocking=blocking)
+
+	def release(self):
+		return self._mutex.release()
 
 	def _internal_set(self, value):
 		self._counter = value
@@ -1282,3 +1531,26 @@ class ConnectivityChecker(object):
 		                                                              "online" if new_value else "offline"))
 		if callable(self._on_change):
 			self._on_change(old_value, new_value)
+
+
+class CaseInsensitiveSet(collections.Set):
+	"""
+	Basic case insensitive set
+
+	Any str or unicode values will be stored and compared in lower case. Other value types are left as-is.
+	"""
+
+	def __init__(self, *args):
+		self.data = set([x.lower() if isinstance(x, (str, unicode)) else x for x in args])
+
+	def __contains__(self, item):
+		if isinstance(item, (str, unicode)):
+			return item.lower() in self.data
+		else:
+			return item in self.data
+
+	def __iter__(self):
+		return iter(self.data)
+
+	def __len__(self):
+		return len(self.data)

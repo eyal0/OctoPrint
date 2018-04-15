@@ -36,7 +36,7 @@ Use the following settings to enable access control:
 
      # If set to true, will automatically log on clients originating from any of the networks defined in
      # "localNetworks" as the user defined in "autologinAs". Defaults to false.
-     autologinLocal: true
+     autologinLocal: false
 
      # The name of the user to automatically log on clients originating from "localNetworks" as. Must
      # be the name of one of your configured users.
@@ -50,6 +50,17 @@ Use the following settings to enable access control:
      localNetworks:
      - 127.0.0.0/8
      - 192.168.1.0/24
+
+     # Whether to trust Basic Authentication headers. If you have setup Basic Authentication in front of
+     # OctoPrint and the user names you use there match OctoPrint accounts, by setting this to true users will
+     # be logged into OctoPrint as the user user during Basic Authentication. Your should ONLY ENABLE THIS if your
+     # OctoPrint instance is only accessible through a connection locked down through Basic Authentication!
+     trustBasicAuthentication: false
+
+     # Whether to also check the password provided through Basic Authentication if the Basic Authentication
+     # header is to be trusted. Disabling this will only match the user name in the Basic Authentication
+     # header and login the user without further checks. Use with caution.
+     checkBasicAuthenticationPassword: true
 
 .. _sec-configuration-config_yaml-api:
 
@@ -285,8 +296,12 @@ The following settings are only relevant to you if you want to do OctoPrint deve
        # to false.
        okWithLinenumber: false
 
-       # Number of extruders to simulate on the virtual printer.
+       # Number of extruders to simulate on the virtual printer. Map from tool id (0, 1, ...) to temperature
+       # in °C
        numExtruders: 1
+
+       # Allows pinning certain hotends to a fixed temperature
+       pinnedExtruders: null
 
        # Whether to include the current tool temperature in the M105 output as separate T segment or not.
        #
@@ -303,13 +318,6 @@ The following settings are only relevant to you if you want to do OctoPrint deve
        # False: > M23 filename.gcode
        #        > File opened
        includeFilenameInOpened: true
-
-       # The maximum movement speeds of the simulated printer's axes, in mm/s
-       movementSpeed:
-         x: 6000
-         y: 6000
-         z: 200
-         e: 300
 
        # Whether the simulated printer should also simulate a heated bed or not
        hasBed: true
@@ -330,6 +338,18 @@ The following settings are only relevant to you if you want to do OctoPrint deve
        # If enabled, uses repetier style resends, sending multiple resends for the same line
        # to make sure nothing gets lost on the line
        repetierStyleResends: false
+
+       # If enabled, ok will be sent before a commands output, otherwise after or inline (M105)
+       #
+       # True:  > M20
+       #        < ok
+       #        < Begin file list
+       #        < End file list
+       # False: > M20
+       #        < Begin file list
+       #        < End file list
+       #        < ok
+       okBeforeCommandOutput: false
 
        # If enabled, reports the first extruder in M105 responses as T instead of T0
        #
@@ -358,7 +378,8 @@ The following settings are only relevant to you if you want to do OctoPrint deve
        # side will block
        rxBuffer: 64
 
-       # Size of simulated command buffer
+       # Size of simulated command buffer, number of commands. If full, buffered commands will block
+       # until a slot frees up
        commandBuffer: 4
 
        # Whether to support the M112 command with simulated kill
@@ -369,6 +390,58 @@ The following settings are only relevant to you if you want to do OctoPrint deve
 
        # Whether to simulate broken M29 behaviour (missing ok after response)
        brokenM29: true
+
+       # Whether F is supported as individual command
+       supportF: false
+
+       # Firmware name to report (useful for testing firmware detection)
+       firmwareName: Virtual Marlin 1.0
+
+       # Simulate a shared nozzle
+       sharedNozzle: false
+
+       # Send "busy" messages if busy processing something
+       sendBusy: false
+
+       # Simulate a reset on connect
+       simulateReset: true
+
+       # Lines to send on simulated reset
+       resetLines:
+       - start
+       - Marlin: Virtual Marlin!
+       - "\x80"
+       - "SD card ok"
+
+       # Initial set of prepared oks to use instead of regular ok (e.g. to simulate
+       # mis-sent oks). Can also be filled at runtime via the debug command prepare_ok
+       preparedOks: []
+
+       # Format string for ok response.
+       #
+       # Placeholders:
+       # - lastN: last acknowledged line number
+       # - buffer: empty slots in internal command buffer
+       #
+       # Example format string for "extended" ok format:
+       #   ok N{lastN} P{buffer}
+       okFormatString: ok
+
+       # Format string for M115 output.
+       #
+       # Placeholders:
+       # - firmare_name: The firmware name as defined in firmwareName
+       m115FormatString: "FIRMWARE_NAME: {firmware_name} PROTOCOL_VERSION:1.0"
+
+       # Whether to include capability report in M115 output
+       m115ReportCapabilites: false
+
+       # Capabilities to report if capability report is enabled
+       capabilities:
+         AUTOREPORT_TEMP: true
+
+       # Simulated ambient temperature in °C
+       ambientTemperature: 21.3
 
 .. _sec-configuration-config_yaml-estimation:
 
@@ -460,51 +533,15 @@ Use the following settings to enable or disable OctoPrint features:
 .. code-block:: yaml
 
    feature:
+
      # Whether to enable the gcode viewer in the UI or not
      gCodeVisualizer: true
 
      # Whether to enable the temperature graph in the UI or not
      temperatureGraph: true
 
-     # Specifies whether OctoPrint should wait for the start response from the printer before trying to send commands
-     # during connect.
-     waitForStartOnConnect: false
-
-     # Specifies whether OctoPrint should send linenumber + checksum with every printer command. Needed for
-     # successful communication with Repetier firmware
-     alwaysSendChecksum: false
-
-     # Specifies whether OctoPrint should also send linenumber + checksum with commands that are *not*
-     # detected as valid GCODE (as in, they do not match the regular expression "^\s*([GM]\d+|T)").
-     sendChecksumWithUnknownCommands: false
-
-     # Specifies whether OctoPrint should also use up acknowledgments ("ok") for commands that are *not*
-     # detected as valid GCODE (as in, they do not match the regular expression "^\s*([GM]\d+|T)").
-     unknownCommandsNeedAck: false
-
-     # Whether to ignore the first ok after a resend response. Needed for successful communication with
-     # Repetier firmware
-     swallowOkAfterResend: false
-
      # Specifies whether support for SD printing and file management should be enabled
      sdSupport: true
-
-     # Specifies whether firmware expects relative paths for selecting SD files
-     sdRelativePath: false
-
-     # Whether to always assume that an SD card is present in the printer.
-     # Needed by some firmwares which don't report the SD card status properly.
-     sdAlwaysAvailable: false
-
-     # Whether the printer sends repetier style target temperatures in the format
-     #   TargetExtr0:<temperature>
-     # instead of attaching that information to the regular M105 responses
-     repetierTargetTemp: false
-
-     # Whether to enable external heatup detection (to detect heatup triggered e.g. through the printer's LCD panel or
-     # while printing from SD) or not. Causes issues with Repetier's "first ok then response" approach to
-     # communication, so disable for printers running Repetier firmware.
-     externalHeatupDetection: true
 
      # Whether to enable the keyboard control feature in the control tab
      keyboardControl: true
@@ -513,28 +550,16 @@ Use the following settings to enable or disable OctoPrint features:
      # notifications instead (false)
      pollWatched: false
 
-     # Whether to ignore identical resends from the printer (true, repetier) or not (false)
-     ignoreIdenticalResends: false
-
-     # If ignoredIdenticalResends is true, how many consecutive identical resends to ignore
-     identicalResendsCount: 7
-
-     # Whether to support F on its own as a valid GCODE command (true) or not (false)
-     supportFAsCommand: false
-
      # Whether to enable model size detection and warning (true) or not (false)
      modelSizeDetection: true
-
-     # Whether to attempt to auto detect the firmware of the printer and adjust settings
-     # accordingly (true) or not and rely on manual configuration (false)
-     firmwareDetection: true
 
      # Whether to show a confirmation on print cancelling (true) or not (false)
      printCancelConfirmation: true
 
-     # Whether to block all sending to the printer while a G4 (dwell) command is active (true, repetier)
-     # or not (false)
-     blockWhileDwelling: false
+     # Commands that should never be auto-uppercased when sent to the printer through the Terminal tab.
+     # Defaults to only M117.
+     autoUppercaseBlacklist:
+     - M117
 
 .. _sec-configuration-config_yaml-folder:
 
@@ -738,6 +763,10 @@ Use the following settings to configure the serial connection to the printer:
        # Defaults to 30 sec
        communication: 30
 
+       # Timeout during serial communication when busy protocol support is detected, in seconds.
+       # Defaults to 3 sec
+       communicationBusy: 3
+
        # Timeout after which to query temperature when no target is set
        temperature: 5
 
@@ -762,7 +791,7 @@ Use the following settings to configure the serial connection to the printer:
 
      # Maximum number of write attempts to serial during which nothing can be written before the communication
      # with the printer is considered dead and OctoPrint will disconnect with an error
-     maxWritePasses:
+     maxWritePasses: 5
 
      # Use this to define additional patterns to consider for serial port listing. Must be a valid
      # "glob" pattern (see http://docs.python.org/2/library/glob.html). Defaults to not set.
@@ -793,7 +822,8 @@ Use the following settings to configure the serial connection to the printer:
      # Command to send in order to initiate a handshake with the printer.
      # Defaults to "M110 N0" which simply resets the line numbers in the firmware and which
      # should be acknowledged with a simple "ok".
-     helloCommand: M110 N0
+     helloCommand:
+     - M110 N0
 
      # Whether to disconnect on errors or not
      disconnectOnErrors: true
@@ -805,12 +835,74 @@ Use the following settings to configure the serial connection to the printer:
      # impact, leave on if possible please
      logResends: true
 
+     # Specifies whether OctoPrint should wait for the start response from the printer before trying to send commands
+     # during connect.
+     waitForStartOnConnect: false
+
+     # Specifies whether OctoPrint should send linenumber + checksum with every printer command. Needed for
+     # successful communication with Repetier firmware
+     alwaysSendChecksum: false
+
+     # Specifies whether OctoPrint should also send linenumber + checksum with commands that are *not*
+     # detected as valid GCODE (as in, they do not match the regular expression "^\s*([GM]\d+|T)").
+     sendChecksumWithUnknownCommands: false
+
+     # Specifies whether OctoPrint should also use up acknowledgments ("ok") for commands that are *not*
+     # detected as valid GCODE (as in, they do not match the regular expression "^\s*([GM]\d+|T)").
+     unknownCommandsNeedAck: false
+
+     # Whether to ignore the first ok after a resend response. Needed for successful communication with
+     # Repetier firmware
+     swallowOkAfterResend: false
+
+     # Specifies whether firmware expects relative paths for selecting SD files
+     sdRelativePath: false
+
+     # Whether to always assume that an SD card is present in the printer.
+     # Needed by some firmwares which don't report the SD card status properly.
+     sdAlwaysAvailable: false
+
+     # Whether the printer sends repetier style target temperatures in the format
+     #   TargetExtr0:<temperature>
+     # instead of attaching that information to the regular M105 responses
+     repetierTargetTemp: false
+
+     # Whether to enable external heatup detection (to detect heatup triggered e.g. through the printer's LCD panel or
+     # while printing from SD) or not. Causes issues with Repetier's "first ok then response" approach to
+     # communication, so disable for printers running Repetier firmware.
+     externalHeatupDetection: true
+
+     # Whether to ignore identical resends from the printer (true, repetier) or not (false)
+     ignoreIdenticalResends: false
+
+     # If ignoredIdenticalResends is true, how many consecutive identical resends to ignore
+     identicalResendsCount: 7
+
+     # Whether to support F on its own as a valid GCODE command (true) or not (false)
+     supportFAsCommand: false
+
+     # Whether to attempt to auto detect the firmware of the printer and adjust settings
+     # accordingly (true) or not and rely on manual configuration (false)
+     firmwareDetection: true
+
+     # Whether to block all sending to the printer while a G4 (dwell) command is active (true, repetier)
+     # or not (false)
+     blockWhileDwelling: false
+
      # Whether to support resends without follow-up ok or not
      supportResendsWithoutOk: false
 
      # Whether to "manually" trigger an ok for M29 (a lot of versions of this command are buggy and
      # the responds skips on the ok)
      triggerOkForM29: true
+
+     capabilities:
+
+       # Whether to enable temperature autoreport in the firmware if its support is detected
+       autoreport_temp: true
+
+       # Whether to shorten the communication timeout if the firmware seems to support the busy protocol
+       busy_protocol: true
 
 .. _sec-configuration-config_yaml-server:
 
@@ -923,6 +1015,17 @@ Use the following settings to configure the server:
        # DNS port against which to check (default: 53 - the default DNS port)
        port: 53
 
+     # Configuration of the plugin blacklist
+     pluginBlacklist:
+       # whether use of the blacklist is enabled, defaults to false
+       enabled: false
+
+       # the URL from which to fetch the blacklist
+       url: http://plugins.octoprint.org/blacklist.json
+
+       # time to live of the cached blacklist, in seconds (default: 15 minutes)
+       ttl: 15 * 60
+
      # Settings of when to display what disk space warning
      diskspace:
 
@@ -1004,7 +1107,7 @@ OctoPrint is running is allowed to do this without password entry:
        command: sudo shutdown -h now
        confirm: You are about to shutdown the system.
 
-You can also add an divider by setting action to divider like this:
+You can also add a divider by setting action to divider like this:
 
 .. code-block:: yaml
 
