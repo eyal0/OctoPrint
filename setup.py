@@ -14,42 +14,41 @@ import octoprint_setuptools
 
 # Requirements for our application
 INSTALL_REQUIRES = [
-	"flask>=0.9,<0.11",
-	"Jinja2>=2.8,<2.9", # Jinja 2.9 has breaking changes WRT template scope - we can't
-	                    # guarantee backwards compatibility for plugins and such with that
-	                    # version, hence we need to pin to a lower version for now. See #1697
+	"flask>=0.10.1,<0.11",
+	"Jinja2>=2.8.1,<2.9", # Jinja 2.9 has breaking changes WRT template scope - we can't
+	                      # guarantee backwards compatibility for plugins and such with that
+	                      # version, hence we need to pin to a lower version for now. See #1697
 	"werkzeug>=0.8.3,<0.9",
-	"tornado==4.0.2", # pinned for now, we need to migrate to a newer tornado, but due
-	                  # to some voodoo needed to get large streamed uploads and downloads
-	                  # to work that is probably not completely straightforward and therefore
-	                  # something for post-1.3.0-stable release
-	"sockjs-tornado>=1.0.3,<1.1",
+	"tornado==4.5.3",
+	#"sockjs-tornado>=1.0.3,<1.1", # current version is incompatible to tornado 5, we use a
+	                               # vendored one
 	"PyYAML>=3.10,<3.11",
-	"Flask-Login>=0.2.2,<0.3",
+	"Flask-Login>=0.2.11,<0.3",
 	"Flask-Principal>=0.3.5,<0.4",
 	"Flask-Babel>=0.9,<0.10",
 	"Flask-Assets>=0.10,<0.11",
-	"markdown>=2.6.4,<2.7",
-	"pyserial>=2.7,<3.5",
-	"netaddr>=0.7.17,<0.8",
+	"markdown>=2.6.9,<2.7",
+	"pyserial>=3.4,<3.5",
+	"netaddr>=0.7.19,<0.8",
 	"watchdog>=0.8.3,<0.9",
-	"sarge>=0.1.4,<0.2",
-	"netifaces>=0.10,<0.11",
+	"sarge==0.1.4",  # 0.1.5 introduced a breaking change with regards to the async keyword. Pinning
+	                 # to 0.1.4 for now to work around this.
+	"netifaces>=0.10.6,<0.11",
 	"pylru>=1.0.9,<1.1",
-	"rsa>=3.2,<3.3",
-	"pkginfo>=1.2.1,<1.3",
+	"rsa>=3.2.3,<3.3",
+	"pkginfo>=1.4.2,<1.5",
 	"requests>=2.18.4,<3",
 	"semantic_version>=2.4.2,<2.5",
-	"psutil>=5.4.1,<6",
+	"psutil>=5.4.6,<5.5",
 	"Click>=6.2,<6.3",
 	"awesome-slugify>=1.6.5,<1.7",
 	"feedparser>=5.2.1,<5.3",
 	"chainmap>=1.0.2,<1.1",
-	"future>=0.15,<0.16",
+	"future>=0.15.2,<0.16",
 	"scandir>=1.3,<1.4",
-	"websocket-client>=0.40,<0.41",
-	"python-dateutil>=2.6,<2.7",
-	"wrapt>=1.10.10,<1.11",
+	"websocket-client>=0.40.0,<0.41",
+	"python-dateutil>=2.6.1,<2.7",
+	"wrapt>=1.10.11,<1.11",
 	"futures>=3.1.1,<3.2",
 	"emoji>=0.4.5,<0.5",
 	"monotonic>=1.3,<1.4",
@@ -73,9 +72,6 @@ EXTRA_REQUIRES = dict(
 		"sphinxcontrib-httpdomain",
 		"sphinxcontrib-mermaid>=0.3",
 		"sphinx_rtd_theme",
-
-		# PyPi upload related
-		"pypandoc"
 	],
 
 	# Dependencies for developing OctoPrint plugins
@@ -92,6 +88,13 @@ DEPENDENCY_LINKS = []
 
 #-----------------------------------------------------------------------------------------------------------------------
 # Anything below here is just command setup and general setup configuration
+
+here = os.path.abspath(os.path.dirname(__file__))
+
+def read_file_contents(path):
+	import codecs
+	with codecs.open(path, encoding="utf-8") as f:
+		return f.read()
 
 def data_copy_build_py_factory(files, baseclass):
 	class data_copy_build_py(baseclass):
@@ -148,45 +151,49 @@ def params():
 	version = versioneer.get_version()
 	cmdclass = get_cmdclass()
 
-	description = "A snappy web interface for 3D printers"
-	long_description = open("README.md").read()
+	description = "The snappy web interface for your 3D printer"
+	long_description = read_file_contents(os.path.join(here, "README.md"))
+	long_description_content_type = "text/markdown"
 
 	install_requires = INSTALL_REQUIRES
 	extras_require = EXTRA_REQUIRES
 	dependency_links = DEPENDENCY_LINKS
 	setup_requires = SETUP_REQUIRES
 
-	try:
-		import pypandoc
-		setup_requires += ["setuptools-markdown"]
-		long_description_markdown_filename = "README.md"
-		del pypandoc
-	except:
-		pass
-
 	classifiers = [
-		"Development Status :: 4 - Beta",
+		"Development Status :: 5 - Production/Stable",
 		"Environment :: Web Environment",
 		"Framework :: Flask",
+		"Intended Audience :: Developers",
 		"Intended Audience :: Education",
 		"Intended Audience :: End Users/Desktop",
 		"Intended Audience :: Manufacturing",
+		"Intended Audience :: Other Audience",
 		"Intended Audience :: Science/Research",
 		"License :: OSI Approved :: GNU Affero General Public License v3",
 		"Natural Language :: English",
+		"Natural Language :: German",
 		"Operating System :: OS Independent",
+		"Programming Language :: Python",
+		"Programming Language :: Python :: 2",
 		"Programming Language :: Python :: 2.7",
+		"Programming Language :: Python :: Implementation :: CPython",
 		"Programming Language :: JavaScript",
-		"Topic :: Internet :: WWW/HTTP",
-		"Topic :: Internet :: WWW/HTTP :: Dynamic Content",
-		"Topic :: Internet :: WWW/HTTP :: WSGI",
 		"Topic :: Printing",
-		"Topic :: System :: Networking :: Monitoring"
+		"Topic :: System :: Monitoring"
 	]
 	author = "Gina Häußge"
-	author_email = "osd@foosel.net"
-	url = "http://octoprint.org"
-	license = "AGPLv3"
+	author_email = "gina@octoprint.org"
+	url = "https://octoprint.org"
+	license = "GNU Affero General Public License v3"
+	keywords = "3dprinting 3dprinter 3d-printing 3d-printer octoprint"
+
+	project_urls={
+		"Community Forum": "https://discourse.octoprint.org",
+		"Bug Reports": "https://github.com/foosel/OctoPrint/issues",
+		"Source": "https://github.com/foosel/OctoPrint",
+		"Funding": "https://donate.octoprint.org"
+	}
 
 	packages = find_packages(where="src")
 	package_dir = {
